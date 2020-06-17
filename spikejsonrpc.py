@@ -12,53 +12,80 @@ import string
 import logging
 from datetime import datetime
 
-letters = string.ascii_letters + string.digits + '_'
-
-
-def random_id(len=4):
-    return ''.join(random.choice(letters) for _ in range(4))
-
 
 class RPC:
+    letters = string.ascii_letters + string.digits + '_'
+
     def __init__(self, tty='/dev/ttyACM0'):
-        self.ser = serial.Serial(tty, 115200)
+        # self.ser = serial.Serial(tty, 115200)
+        self.ser = serial.Serial(tty, 9600)
         self.recv_buf = bytearray()
+
+    @staticmethod
+    def random_id(length=4):
+        return ''.join(random.choice(RPC.letters) for _ in range(length))
 
     def recv_message(self, timeout=1):
         start_time = time.time()
         elapsed = 0
         while True:
             pos = self.recv_buf.find(b'\x0d')
+            # if len(self.recv_buf) > 0:
+            #     logging.debug(f'XXX: {self.recv_buf}')
             if pos >= 0:
                 result = self.recv_buf[:pos]
                 self.recv_buf = self.recv_buf[pos + 1:]
                 data = result.decode('utf-8')
+
                 idx = data.find('{')
                 if idx != -1:
                     data = data[idx:]
                 try:
-                    return json.loads(data)
+                    res = json.loads(data)
+                    # print('bbb:', data)
+                    self.process_json(res)
+                    return res
                 except json.JSONDecodeError:
-                    logging.debug("Cannot parse JSON: %s" % result)
-            c = self.ser.in_waiting
+                    if len(data):
+                        logging.debug("Cannot parse JSON: %s" % data)
+
+                        pass
+                    pass
+            c = self.ser.inWaiting()
             if c == 0 and elapsed >= timeout:
                 break
             self.ser.timeout = 1 - timeout
-            self.recv_buf = self.recv_buf + self.ser.read(c if c else 1)
+            new_data = self.ser.read(c if c else 1)
+            if len(new_data):
+                # print('aaa:', new_data)
+                self.recv_buf = self.recv_buf + new_data
+                pass
+
+
+            # if c:
+            #     self.recv_buf = self.recv_buf + self.ser.read(c)
             elapsed = time.time() - start_time
         return None
 
-    def send_message(self, name, params={}):
+    def send_message_0(self, msg):
+        msg_string = json.dumps(msg)
+        logging.debug('sending: %s' % msg_string)
+        # self.ser.write(msg_string.encode('utf-8')+b'\x0D')
+        # self.ser.flush()
+        self.ser.write(msg_string.encode('utf-8'))
+        self.ser.write(b'\x0D')
+        # self.ser.flush()
+
+    def send_message(self, name, params={}, timeout=1):
         while True:
             if not self.recv_message(timeout=0):
                 break
-        id = random_id()
-        msg = {'m': name, 'p': params, 'i': id}
-        msg_string = json.dumps(msg)
-        logging.debug('sending: %s' % msg_string)
-        self.ser.write(msg_string.encode('utf-8'))
-        self.ser.write(b'\x0D')
-        return self.recv_response(id)
+
+        id = RPC.random_id()
+        msg = {'i': id, 'm': name, 'p': params}
+        self.send_message_0(msg)
+
+        return self.recv_response(id, timeout=1)
 
     def recv_response(self, id, timeout=1):
         start_time = time.time()
@@ -68,11 +95,16 @@ class RPC:
             if m is None:
                 return
             if 'i' in m and m['i'] == id:
-                logging.debug('response: %s' % m)
+                logging.debug(f'getting: {m} for {id}')
                 if 'e' in m:
                     error = json.loads(base64.b64decode(m['e']).decode('utf-8'))
                     raise ConnectionError(error)
+                print('ccc', m)
                 return m['r']
+            else:
+                # logging.debug(f'getting: {m}')
+                pass
+
             if elapsed >= timeout:
                 logging.debug(f'Timeout while waiting for response for id: {id}')
                 return
@@ -81,20 +113,39 @@ class RPC:
 
     # Program Methods
     def program_execute(self, n):
+        # x = {"i":"623p","m":"trigger_current_state","p":{}}
+        # x = {"i":"cIGO","m":"program_modechange","p":{"mode":"download"}}
+
+        # self.ser.write(b'\r\x02')
+
+        self.get_firmware_info()
+        self.send_message('trigger_current_state')
+        time.sleep(0.1)
+        self.send_message('program_modechange', {'mode': 'download'})
+        time.sleep(0.1)
+        self.send_message('set_hub_name', {'name': 'VGVzdDI='})
+        time.sleep(0.1)
+
         res = self.send_message('program_execute', {'slotid': n})
+        time.sleep(0.5)
+        self.recv_response('', 10)
+        # self.recv_response("eric", 2)
+
         return res
 
     def program_terminate(self):
         return self.send_message('program_terminate')
 
     def get_storage_information(self):
-        return self.send_message('get_storage_status')
+        time.sleep(1)
+        self.send_message('trigger_current_state')
+        return self.send_message('get_storage_status', timeout=0)
 
     def start_write_program(self, name, size, slot, created, modified):
         # meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python'}
 
         meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python',
-                'project_id': random_id(12)}
+                'project_id': RPC.random_id(12)}
         res = self.send_message('start_write_program', {'slotid': slot, 'size': size, 'meta': meta})
         return res
 
@@ -128,6 +179,34 @@ class RPC:
     def get_firmware_info(self):
         return self.send_message('get_firmware_info')
 
+    def process_json(self, res):
+        if 'm' in res.keys():
+            if res['m'] == 'runtime_error' or res['m'] == 'user_program_error':
+                error = RPC.decode(res['p'][3])
+                logging.debug('Error: {}'.format(error))
+                raise SystemExit
+                return
+            if res['m'] == 0 or res['m'] == 2:
+                return
+            if res['m'] == "userProgram.print":
+                data = res['p']['value']
+                # print(f'xxxx {res}')
+                id = res['i']
+                print(RPC.decode(data), end='')
+                msg = {'i': id, 'r': None}
+                self.send_message_0(msg)
+                return
+            logging.debug(res)
+        elif 'e' in res.keys():
+            logging.debug(f"Error: {RPC.decode(res['e'])}")
+        else:
+            # print('what is that?', res)
+            pass
+
+    @staticmethod
+    def decode(data):
+        return base64.b64decode(data).decode('utf-8')
+
 
 if __name__ == "__main__":
     def handle_list():
@@ -151,8 +230,19 @@ if __name__ == "__main__":
         rt = '.'.join(str(x) for x in info['runtime'])
         print("Firmware version: %s; Runtime version: %s" % (fw, rt))
 
+    def handle_reboot():
+        rpc.ser.write(b'\r\x03\x03')
+        # time.sleep(0.01)
+        # rpc.ser.write(b'print("Eric")')
+        # rpc.ser.write(b'\x0D')
+        time.sleep(0.1)
+        rpc.ser.write(b'\r\x04');
+        print('Please waiting while hub is reconnecting...')
+        # todo: Faster exit, maybe kill the serial connections?
+
 
     def handle_upload():
+
         with open(args.file, "rb") as f:
             size = os.path.getsize(args.file)
             name = args.name if args.name else args.file
@@ -181,6 +271,9 @@ if __name__ == "__main__":
 
     fwinfo_parser = sub_parsers.add_parser('fwinfo', help='Show firmware version')
     fwinfo_parser.set_defaults(func=handle_fwinfo)
+
+    reboot_parser = sub_parsers.add_parser('reboot', help='Reboot hub')
+    reboot_parser.set_defaults(func=handle_reboot)
 
     mvprogram_parser = sub_parsers.add_parser('mv', help='Changes program slot')
     mvprogram_parser.add_argument('from_slot', type=int)
