@@ -15,8 +15,8 @@ from datetime import datetime
 letters = string.ascii_letters + string.digits + '_'
 
 
-def random_id(len=4):
-    return ''.join(random.choice(letters) for _ in range(4))
+def random_id(size=4):
+    return ''.join(random.choice(letters) for _ in range(size))
 
 
 class RPC:
