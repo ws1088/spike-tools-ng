@@ -17,9 +17,26 @@ class RPC:
     letters = string.ascii_letters + string.digits + '_'
 
     def __init__(self, tty='/dev/ttyACM0'):
-        # self.ser = serial.Serial(tty, 115200)
-        self.ser = serial.Serial(tty, 9600)
+        self.ser = None
+        for i in range(1, 6):
+            try:
+                self.ser = serial.Serial(tty, 115200)
+                # self.ser = serial.Serial(tty, 9600)
+                break
+            except serial.SerialException:
+                print(f'Retrying ({i}) ...')
+
+        if not self.ser:
+            print(f'Error while connecting to {tty}')
+            raise SystemExit
+
+
         self.recv_buf = bytearray()
+        self.print_line = False
+
+    def __del__(self):
+        if hasattr(self, 'ser') and self.ser:
+            self.ser.close()
 
     @staticmethod
     def random_id(length=4):
@@ -47,8 +64,11 @@ class RPC:
                     return res
                 except json.JSONDecodeError:
                     if len(data):
-                        logging.debug("Cannot parse JSON: %s" % data)
-
+                        if self.print_line:
+                            # print('>', data)
+                            print(data)
+                        else:
+                            logging.debug("Cannot parse JSON: %s" % data)
                         pass
                     pass
             c = self.ser.inWaiting()
@@ -70,11 +90,13 @@ class RPC:
     def send_message_0(self, msg):
         msg_string = json.dumps(msg)
         logging.debug('sending: %s' % msg_string)
-        # self.ser.write(msg_string.encode('utf-8')+b'\x0D')
-        # self.ser.flush()
-        self.ser.write(msg_string.encode('utf-8'))
-        self.ser.write(b'\x0D')
-        # self.ser.flush()
+
+        self.ser.flushInput()
+        self.ser.write(msg_string.encode('utf-8')+b'\x0D')
+
+        # self.ser.write(msg_string.encode('utf-8'))
+        # self.ser.write(b'\x0D')
+        self.ser.flushOutput()
 
     def send_message(self, name, params={}, timeout=1):
         while True:
@@ -99,7 +121,6 @@ class RPC:
                 if 'e' in m:
                     error = json.loads(base64.b64decode(m['e']).decode('utf-8'))
                     raise ConnectionError(error)
-                print('ccc', m)
                 return m['r']
             else:
                 # logging.debug(f'getting: {m}')
@@ -116,20 +137,24 @@ class RPC:
         # x = {"i":"623p","m":"trigger_current_state","p":{}}
         # x = {"i":"cIGO","m":"program_modechange","p":{"mode":"download"}}
 
-        # self.ser.write(b'\r\x02')
+        # self.ser.write(b'\r\x01')
 
         self.get_firmware_info()
         self.send_message('trigger_current_state')
         time.sleep(0.1)
         self.send_message('program_modechange', {'mode': 'download'})
         time.sleep(0.1)
-        self.send_message('set_hub_name', {'name': 'VGVzdDI='})
-        time.sleep(0.1)
+        # self.send_message('set_hub_name', {'name': 'VGVzdDI='})
+        # time.sleep(0.1)
 
+        self.print_line = True
+        print('Running... ')
         res = self.send_message('program_execute', {'slotid': n})
         time.sleep(0.5)
-        self.recv_response('', 10)
+        self.recv_response('', 100)
+        self.print_line = False
         # self.recv_response("eric", 2)
+        # self.program_terminate()
 
         return res
 
@@ -142,9 +167,8 @@ class RPC:
         return self.send_message('get_storage_status', timeout=0)
 
     def start_write_program(self, name, size, slot, created, modified):
-        # meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python'}
-
-        meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python',
+        short_name = os.path.basename(name)
+        meta = {'created': created, 'modified': modified, 'name': short_name, 'type': 'python',
                 'project_id': RPC.random_id(12)}
         res = self.send_message('start_write_program', {'slotid': slot, 'size': size, 'meta': meta})
         return res
@@ -183,7 +207,7 @@ class RPC:
         if 'm' in res.keys():
             if res['m'] == 'runtime_error' or res['m'] == 'user_program_error':
                 error = RPC.decode(res['p'][3])
-                logging.debug('Error: {}'.format(error))
+                print('Error: {}'.format(error), file=sys.stderr)
                 raise SystemExit
                 return
             if res['m'] == 0 or res['m'] == 2:
@@ -196,7 +220,7 @@ class RPC:
                 msg = {'i': id, 'r': None}
                 self.send_message_0(msg)
                 return
-            logging.debug(res)
+            # logging.debug(res)
         elif 'e' in res.keys():
             logging.debug(f"Error: {RPC.decode(res['e'])}")
         else:
@@ -243,11 +267,23 @@ if __name__ == "__main__":
 
     def handle_upload():
 
+        # rpc.program_terminate()
+        # time.sleep(2)
         with open(args.file, "rb") as f:
             size = os.path.getsize(args.file)
             name = args.name if args.name else args.file
             now = int(time.time() * 1000)
-            start = rpc.start_write_program(name, size, args.to_slot, now, now)
+            start = None
+            for i in range(1, 6):
+                start = rpc.start_write_program(name, size, args.to_slot, now, now)
+                if start:
+                    break
+                print(f'Retrying ({i})....')
+                time.sleep(0.5)
+
+            if not start:
+                print('Failed....')
+                return
             bs = start['blocksize']
             id = start['transferid']
             with tqdm(total=size, unit='B', unit_scale=True) as pbar:
