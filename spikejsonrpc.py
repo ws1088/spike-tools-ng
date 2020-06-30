@@ -12,6 +12,12 @@ import string
 import logging
 from datetime import datetime
 
+letters = string.ascii_letters + string.digits + '_'
+
+
+def random_id(size=4):
+    return ''.join(random.choice(letters) for _ in range(size))
+
 
 class RPC:
     letters = string.ascii_letters + string.digits + '_'
