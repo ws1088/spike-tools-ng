@@ -67,9 +67,6 @@ class RPC:
                 self.recv_buf = self.recv_buf + new_data
                 pass
 
-
-            # if c:
-            #     self.recv_buf = self.recv_buf + self.ser.read(c)
             elapsed = time.time() - start_time
         return None
 
@@ -105,7 +102,6 @@ class RPC:
                 if 'e' in m:
                     error = json.loads(base64.b64decode(m['e']).decode('utf-8'))
                     raise ConnectionError(error)
-                print('ccc', m)
                 return m['r']
             else:
                 # logging.debug(f'getting: {m}')
@@ -134,8 +130,7 @@ class RPC:
 
         res = self.send_message('program_execute', {'slotid': n})
         time.sleep(0.5)
-        self.recv_response('', 10)
-        # self.recv_response("eric", 2)
+        self.recv_response('', 120)
 
         return res
 
@@ -148,8 +143,6 @@ class RPC:
         return self.send_message('get_storage_status', timeout=0)
 
     def start_write_program(self, name, size, slot, created, modified):
-        # meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python'}
-
         meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python',
                 'project_id': RPC.random_id(12)}
         res = self.send_message('start_write_program', {'slotid': slot, 'size': size, 'meta': meta})
@@ -189,14 +182,13 @@ class RPC:
         if 'm' in res.keys():
             if res['m'] == 'runtime_error' or res['m'] == 'user_program_error':
                 error = RPC.decode(res['p'][3])
-                logging.debug('Error: {}'.format(error))
+                print('Error: {}'.format(error), file=sys.stderr)
                 raise SystemExit
                 return
             if res['m'] == 0 or res['m'] == 2:
                 return
             if res['m'] == "userProgram.print":
                 data = res['p']['value']
-                # print(f'xxxx {res}')
                 id = res['i']
                 print(RPC.decode(data), end='')
                 msg = {'i': id, 'r': None}
@@ -238,8 +230,6 @@ if __name__ == "__main__":
 
     def handle_reboot():
         rpc.ser.write(b'\r\x03\x03')
-        # time.sleep(0.01)
-        # rpc.ser.write(b'print("Eric")')
         # rpc.ser.write(b'\x0D')
         time.sleep(0.1)
         rpc.ser.write(b'\r\x04');
