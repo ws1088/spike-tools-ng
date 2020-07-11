@@ -12,26 +12,25 @@ import string
 import logging
 from datetime import datetime
 
-letters = string.ascii_letters + string.digits + '_'
-
-
-def random_id(size=4):
-    return ''.join(random.choice(letters) for _ in range(size))
-
 
 class RPC:
     letters = string.ascii_letters + string.digits + '_'
 
     def __init__(self, tty='/dev/ttyACM0'):
         # self.ser = serial.Serial(tty, 115200)
-        self.ser = serial.Serial(tty, 9600)
+        for i in range(1, 6):
+            try:
+                self.ser = serial.Serial(tty, 9600)
+                break
+            except:
+                print(f'Retrying ({i})...')
         self.recv_buf = bytearray()
 
     @staticmethod
     def random_id(length=4):
         return ''.join(random.choice(RPC.letters) for _ in range(length))
 
-    def recv_message(self, timeout=1):
+    def recv_message(self, timeout=1, replout=False):
         start_time = time.time()
         elapsed = 0
         while True:
@@ -48,19 +47,19 @@ class RPC:
                     data = data[idx:]
                 try:
                     res = json.loads(data)
-                    # print('bbb:', data)
                     self.process_json(res)
                     return res
                 except json.JSONDecodeError:
                     if len(data):
                         logging.debug("Cannot parse JSON: %s" % data)
-
+                        if replout:
+                            print(data)
                         pass
                     pass
             c = self.ser.inWaiting()
             if c == 0 and elapsed >= timeout:
                 break
-            self.ser.timeout = 1 - timeout
+            self.ser.timeout = timeout
             new_data = self.ser.read(c if c else 1)
             if len(new_data):
                 # print('aaa:', new_data)
@@ -90,13 +89,16 @@ class RPC:
 
         return self.recv_response(id, timeout=1)
 
-    def recv_response(self, id, timeout=1):
+    def recv_response(self, id, timeout=1, replout=False):
         start_time = time.time()
         elapsed = 0
         while True:
-            m = self.recv_message()
-            if m is None:
+            if elapsed >= timeout:
+                logging.debug(f'Timeout while waiting for response for id: {id}')
                 return
+            m = self.recv_message(timeout=1, replout=replout)
+            if m is None:
+                continue
             if 'i' in m and m['i'] == id:
                 logging.debug(f'getting: {m} for {id}')
                 if 'e' in m:
@@ -107,9 +109,6 @@ class RPC:
                 # logging.debug(f'getting: {m}')
                 pass
 
-            if elapsed >= timeout:
-                logging.debug(f'Timeout while waiting for response for id: {id}')
-                return
             # logging.debug(f'While waiting for response: {m}')
             elapsed = time.time() - start_time
 
@@ -125,12 +124,12 @@ class RPC:
         time.sleep(0.1)
         self.send_message('program_modechange', {'mode': 'download'})
         time.sleep(0.1)
-        self.send_message('set_hub_name', {'name': 'VGVzdDI='})
-        time.sleep(0.1)
+        # self.send_message('set_hub_name', {'name': 'VGVzdDI='})
+        # time.sleep(0.1)
 
         res = self.send_message('program_execute', {'slotid': n})
         time.sleep(0.5)
-        self.recv_response('', 120)
+        self.recv_response('', timeout=120, replout=True)
 
         return res
 
@@ -143,6 +142,7 @@ class RPC:
         return self.send_message('get_storage_status', timeout=0)
 
     def start_write_program(self, name, size, slot, created, modified):
+        short_name = name.split(os.sep)
         meta = {'created': created, 'modified': modified, 'name': name, 'type': 'python',
                 'project_id': RPC.random_id(12)}
         res = self.send_message('start_write_program', {'slotid': slot, 'size': size, 'meta': meta})
@@ -180,12 +180,13 @@ class RPC:
 
     def process_json(self, res):
         if 'm' in res.keys():
+            if res['m'] == 0 or res['m'] == 2:
+                return
+            # print('JSON:', res)
             if res['m'] == 'runtime_error' or res['m'] == 'user_program_error':
                 error = RPC.decode(res['p'][3])
                 print('Error: {}'.format(error), file=sys.stderr)
                 raise SystemExit
-                return
-            if res['m'] == 0 or res['m'] == 2:
                 return
             if res['m'] == "userProgram.print":
                 data = res['p']['value']
@@ -221,7 +222,6 @@ if __name__ == "__main__":
                 print("%2s %-40s %5db %6s %20s" % (i, sl['name'], sl['size'], sl['id'], modified))
         print(("%s/%s%s Free" % (storage['free'], storage['total'], storage['unit'])).rjust(78))
 
-
     def handle_fwinfo():
         info = rpc.get_firmware_info()
         fw = '.'.join(str(x) for x in info['version'])
@@ -236,9 +236,7 @@ if __name__ == "__main__":
         print('Please waiting while hub is reconnecting...')
         # todo: Faster exit, maybe kill the serial connections?
 
-
     def handle_upload():
-
         with open(args.file, "rb") as f:
             size = os.path.getsize(args.file)
             name = args.name if args.name else args.file
@@ -254,7 +252,6 @@ if __name__ == "__main__":
                     b = f.read(bs)
             if args.start:
                 rpc.program_execute(args.to_slot)
-
 
     parser = argparse.ArgumentParser(description='Tools for Spike Hub RPC protocol')
     parser.add_argument('-t', '--tty', help='Spike Hub device path', default='/dev/ttyACM0')
