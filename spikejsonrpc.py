@@ -17,10 +17,10 @@ class RPC:
     letters = string.ascii_letters + string.digits + '_'
 
     def __init__(self, tty='/dev/ttyACM0'):
-        # self.ser = serial.Serial(tty, 115200)
         for i in range(1, 6):
             try:
-                self.ser = serial.Serial(tty, 9600)
+                self.ser = serial.Serial(tty, 115200)
+                # self.ser = serial.Serial(tty, 9600)
                 break
             except:
                 print(f'Retrying ({i})...')
@@ -30,7 +30,7 @@ class RPC:
     def random_id(length=4):
         return ''.join(random.choice(RPC.letters) for _ in range(length))
 
-    def recv_message(self, timeout=1, replout=False):
+    def recv_message(self, timeout=1, console_out=False):
         start_time = time.time()
         elapsed = 0
         while True:
@@ -52,7 +52,7 @@ class RPC:
                 except json.JSONDecodeError:
                     if len(data):
                         logging.debug("Cannot parse JSON: %s" % data)
-                        if replout:
+                        if console_out:
                             print(data)
                         pass
                     pass
@@ -89,14 +89,14 @@ class RPC:
 
         return self.recv_response(id, timeout=1)
 
-    def recv_response(self, id, timeout=1, replout=False):
+    def recv_response(self, id, timeout=1, console_out=False):
         start_time = time.time()
         elapsed = 0
         while True:
             if elapsed >= timeout:
                 logging.debug(f'Timeout while waiting for response for id: {id}')
                 return
-            m = self.recv_message(timeout=1, replout=replout)
+            m = self.recv_message(timeout=1, console_out=console_out)
             if m is None:
                 continue
             if 'i' in m and m['i'] == id:
@@ -114,22 +114,16 @@ class RPC:
 
     # Program Methods
     def program_execute(self, n):
-        # x = {"i":"623p","m":"trigger_current_state","p":{}}
-        # x = {"i":"cIGO","m":"program_modechange","p":{"mode":"download"}}
-
-        # self.ser.write(b'\r\x02')
-
-        self.get_firmware_info()
-        self.send_message('trigger_current_state')
-        time.sleep(0.1)
+        # self.get_firmware_info()
+        # self.send_message('trigger_current_state')
+        # time.sleep(0.1)
         self.send_message('program_modechange', {'mode': 'download'})
-        time.sleep(0.1)
-        # self.send_message('set_hub_name', {'name': 'VGVzdDI='})
         # time.sleep(0.1)
 
         res = self.send_message('program_execute', {'slotid': n})
-        time.sleep(0.5)
-        self.recv_response('', timeout=120, replout=True)
+        # time.sleep(0.5)
+
+        self.recv_response('', timeout=120, console_out=True)
 
         return res
 
